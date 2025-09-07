@@ -6,7 +6,7 @@
   "deadzone": 0.0,
   "expo": 0.0,
   "clamp": 0.98,
-  "invert_throttle": false,
+  "invert_throttle": true,
   "invert_steering": false,
   "swap_controls": false,
   "grab_device": true,
@@ -33,7 +33,7 @@
   "throttle_trim": 0.0,
   "analog_pedal_feel": false,
   "throttle_ramp_duration": 3.0,
-  "acceleration_curve": "exponential",
+  "acceleration_curve": "linear",
   "curve_strength": 5.0,
   "controller_type": "auto",
   "xbox_steering_axis": 0,
@@ -41,6 +41,7 @@
   "xbox_brake_axis": 2,
   "xbox_use_triggers": true,
   "xbox_use_dpad": false,
+  "xbox_raw_output": true,
   "throttle_ramp_speed": 1.0,
   "brake_ramp_speed": 10.0
 }

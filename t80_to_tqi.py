@@ -24,7 +24,8 @@ def load_config():
         "acceleration_curve": "exponential",
         "curve_strength": 2.0,
         "controller_type": "auto",
-        "xbox_use_triggers": True
+        "xbox_use_triggers": True,
+        "xbox_raw_output": False
     }
     
     try:
@@ -60,6 +61,7 @@ ACCELERATION_CURVE = config["acceleration_curve"]
 CURVE_STRENGTH = config["curve_strength"]
 CONTROLLER_TYPE = config["controller_type"]
 XBOX_USE_TRIGGERS = config["xbox_use_triggers"]
+XBOX_RAW_OUTPUT = config.get("xbox_raw_output", False)
 
 # Button codes for pedals (adjust these based on your T80 wheel)
 FORWARD_PEDAL_CODES = {ecodes.BTN_TR, ecodes.BTN_TRIGGER}
@@ -415,25 +417,36 @@ def main():
                         
                         # Combine: forward gives positive, reverse gives negative
                         y = forward_norm - reverse_norm
+                        
+                        # Skip deadzone and expo processing for raw output mode
+                        if not XBOX_RAW_OUTPUT:
+                            y = expo(apply_deadzone(y, DEADZONE), EXPO)
                     else:
                         # Traditional single axis throttle
                         y = normalize(ax_val['y'], ax_min['y'], ax_max['y'])
-                        y = expo(apply_deadzone(y, DEADZONE), EXPO)
+                        if not XBOX_RAW_OUTPUT:
+                            y = expo(apply_deadzone(y, DEADZONE), EXPO)
                 
                 if INVERT_THROTTLE: y = -y
                 
-                # Apply output smoothing for stable output
-                # Update circular buffer
-                steering_filter[filter_index % len(steering_filter)] = x
-                throttle_filter[filter_index % len(throttle_filter)] = y
-                filter_index += 1
-                
-                # Calculate smoothed outputs
-                x_smooth = sum(steering_filter) / len(steering_filter)
-                y_smooth = sum(throttle_filter) / len(throttle_filter)
+                # Apply output smoothing for stable output (unless raw output is enabled)
+                if XBOX_RAW_OUTPUT and controller_type == "xbox" and XBOX_USE_TRIGGERS:
+                    # Raw output mode: send values directly without smoothing
+                    dac_st.write(to_dac12(x))
+                    dac_th.write(to_dac12(y))
+                else:
+                    # Normal mode: use smoothing filters
+                    # Update circular buffer
+                    steering_filter[filter_index % len(steering_filter)] = x
+                    throttle_filter[filter_index % len(throttle_filter)] = y
+                    filter_index += 1
+                    
+                    # Calculate smoothed outputs
+                    x_smooth = sum(steering_filter) / len(steering_filter)
+                    y_smooth = sum(throttle_filter) / len(throttle_filter)
 
-                dac_st.write(to_dac12(x_smooth))
-                dac_th.write(to_dac12(y_smooth))
+                    dac_st.write(to_dac12(x_smooth))
+                    dac_th.write(to_dac12(y_smooth))
             
             # Small sleep to prevent excessive CPU usage
             time.sleep(0.001)  # 1ms sleep

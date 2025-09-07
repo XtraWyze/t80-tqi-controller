@@ -110,7 +110,8 @@ class Config:
             "xbox_throttle_axis": ecodes.ABS_RZ,  # Xbox right trigger for throttle
             "xbox_brake_axis": ecodes.ABS_Z,     # Xbox left trigger for brake/reverse
             "xbox_use_triggers": True,           # Use triggers for throttle/brake instead of stick
-            "xbox_use_dpad": False               # Use D-pad for discrete steering
+            "xbox_use_dpad": False,              # Use D-pad for discrete steering
+            "xbox_raw_output": False             # Raw output mode for maximum responsiveness
         }
         
         try:
@@ -987,6 +988,10 @@ class T80GUI:
         ttk.Checkbutton(xbox_frame, text="Use triggers for throttle/brake (recommended)", 
                        variable=self.xbox_use_triggers_var).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
+        self.xbox_raw_output_var = tk.BooleanVar(value=getattr(self.config, 'xbox_raw_output', False))
+        ttk.Checkbutton(xbox_frame, text="Raw output mode (no deadzone/smoothing for maximum responsiveness)", 
+                       variable=self.xbox_raw_output_var).grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        
         xbox_info = ttk.Label(xbox_frame, text=
             "Xbox Controller Layout:\n" +
             "• Left stick: Steering\n" +
@@ -995,7 +1000,7 @@ class T80GUI:
             "• A/X buttons: Forward (if not using triggers)\n" +
             "• B/Y buttons: Reverse (if not using triggers)",
             justify=tk.LEFT, font=("TkDefaultFont", 8))
-        xbox_info.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        xbox_info.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
         # Analog pedal feel settings
         analog_pedal_frame = ttk.LabelFrame(content_frame, text="Analog Pedal Feel")
@@ -1924,6 +1929,7 @@ class T80GUI:
             self.config.throttle_ramp_duration = self.throttle_ramp_duration_var.get()
             self.config.controller_type = self.controller_type_var.get()
             self.config.xbox_use_triggers = self.xbox_use_triggers_var.get()
+            self.config.xbox_raw_output = self.xbox_raw_output_var.get()
             
             # Update the controller's ramping duration
             self.controller.throttle_ramp_duration = self.config.throttle_ramp_duration
@@ -1966,6 +1972,7 @@ class T80GUI:
             # Update controller type settings
             self.controller_type_var.set(self.config.controller_type)
             self.xbox_use_triggers_var.set(self.config.xbox_use_triggers)
+            self.xbox_raw_output_var.set(getattr(self.config, 'xbox_raw_output', False))
             
             # Update trim labels
             self.update_steering_trim()
