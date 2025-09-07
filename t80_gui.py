@@ -53,7 +53,13 @@ class Config:
             "analog_pedal_feel": True,  # Enable analog-like ramping for button pedals
             "throttle_ramp_duration": 1.0,   # Time in seconds to reach full throttle when button held
             "acceleration_curve": "exponential",  # "linear", "exponential", "s_curve", "quadratic"
-            "curve_strength": 2.0   # Strength of the curve effect (1.0 = linear, higher = more curved)
+            "curve_strength": 2.0,   # Strength of the curve effect (1.0 = linear, higher = more curved)
+            "controller_type": "auto",  # "auto", "t80", "xbox", "gamepad"
+            "xbox_steering_axis": ecodes.ABS_X,  # Xbox left stick X for steering
+            "xbox_throttle_axis": ecodes.ABS_RZ,  # Xbox right trigger for throttle
+            "xbox_brake_axis": ecodes.ABS_Z,     # Xbox left trigger for brake/reverse
+            "xbox_use_triggers": True,           # Use triggers for throttle/brake instead of stick
+            "xbox_use_dpad": False               # Use D-pad for discrete steering
         }
         
         try:
@@ -97,17 +103,19 @@ class InputController:
         self.device = None
         self.running = False
         self.thread = None
+        self.controller_type = "unknown"
         
         # Input tracking
-        self.ax_min = {'steering': 32767, 'throttle': 32767, 'combined_axis': 32767}
-        self.ax_max = {'steering': -32768, 'throttle': -32768, 'combined_axis': -32768}
-        self.ax_val = {'steering': 0, 'throttle': 0, 'combined_axis': 0}
+        self.ax_min = {'steering': 32767, 'throttle': 32767, 'combined_axis': 32767, 'forward': 0, 'reverse': 0}
+        self.ax_max = {'steering': -32768, 'throttle': -32768, 'combined_axis': -32768, 'forward': 255, 'reverse': 255}
+        self.ax_val = {'steering': 0, 'throttle': 0, 'combined_axis': 0, 'forward': 0, 'reverse': 0}
         
         # Button states for pedals
         self.button_states = {'forward_pedal': False, 'reverse_pedal': False}
         
         # Analog pedal feel - duration-based system
         self.button_press_start_time = {'forward': None, 'reverse': None}  # When button was first pressed
+        self.throttle_ramp_duration = config.throttle_ramp_duration  # Duration for ramping
         
         # Output smoothing for stable output
         self.steering_filter = [0.0] * 5  # 5-sample moving average
@@ -132,24 +140,77 @@ class InputController:
             self.i2c_available = False
     
     def find_input_device(self):
-        """Find the Thrustmaster T80 device"""
+        """Find compatible input device (T80, Xbox controller, or generic gamepad)"""
         byid = "/dev/input/by-id"
+        devices = []
+        
         if os.path.isdir(byid):
             for name in os.listdir(byid):
-                if "Thrustmaster" in name and "event" in name:
-                    return os.path.join(byid, name)
-        return "/dev/input/event0"
+                if "event" in name:
+                    device_path = os.path.join(byid, name)
+                    # Prioritize based on controller type preference
+                    if self.config.controller_type == "t80" and "Thrustmaster" in name:
+                        return device_path, "t80"
+                    elif self.config.controller_type == "xbox" and ("Microsoft" in name or "Xbox" in name):
+                        return device_path, "xbox"
+                    elif "Thrustmaster" in name:
+                        devices.append((device_path, "t80"))
+                    elif "Microsoft" in name or "Xbox" in name:
+                        devices.append((device_path, "xbox"))
+                    elif any(term in name.lower() for term in ["controller", "gamepad", "joystick"]):
+                        devices.append((device_path, "gamepad"))
+        
+        # Return the first compatible device if auto-detection
+        if devices and self.config.controller_type == "auto":
+            return devices[0]
+        
+        # Return specific type if found
+        for device_path, controller_type in devices:
+            if self.config.controller_type == controller_type:
+                return device_path, controller_type
+        
+        # Fallback to first device or default
+        if devices:
+            return devices[0]
+        return "/dev/input/event0", "unknown"
+    
+    def detect_controller_type(self, device_path):
+        """Detect controller type from device capabilities"""
+        try:
+            test_device = InputDevice(device_path)
+            name = test_device.name.lower()
+            capabilities = test_device.capabilities()
+            test_device.close()
+            
+            if "thrustmaster" in name:
+                return "t80"
+            elif "microsoft" in name or "xbox" in name:
+                return "xbox"
+            elif any(term in name for term in ["controller", "gamepad"]):
+                return "gamepad"
+            else:
+                return "unknown"
+        except:
+            return "unknown"
     
     def connect_device(self, device_path=None):
         """Connect to input device"""
         try:
             if device_path is None:
-                device_path = self.find_input_device()
+                device_info = self.find_input_device()
+                if isinstance(device_info, tuple):
+                    device_path, self.controller_type = device_info
+                else:
+                    device_path = device_info
+                    self.controller_type = self.detect_controller_type(device_path)
+            else:
+                self.controller_type = self.detect_controller_type(device_path)
             
             self.device = InputDevice(device_path)
             if self.config.grab_device:
                 self.device.grab()
-            return True, f"Connected to {device_path}"
+            
+            return True, f"Connected to {device_path} ({self.controller_type})"
         except Exception as e:
             return False, f"Failed to connect: {e}"
     
@@ -276,14 +337,28 @@ class InputController:
                 throttle_norm = combined_norm
                 
             else:  # "axes" mode - separate analog axes
-                forward_norm = self.normalize(self.ax_val['forward'],
-                                            self.ax_min['forward'],
-                                            self.ax_max['forward'])
-                reverse_norm = self.normalize(self.ax_val['reverse'],
-                                            self.ax_min['reverse'],
-                                            self.ax_max['reverse'])
-                # Combine: forward gives positive, reverse gives negative
-                throttle_norm = forward_norm - reverse_norm
+                if self.controller_type == "xbox" and self.config.xbox_use_triggers:
+                    # Xbox triggers: Convert from 0-255 range to -1 to +1
+                    # Right trigger (forward) and left trigger (reverse/brake)
+                    forward_raw = self.ax_val.get('forward', 0)
+                    reverse_raw = self.ax_val.get('reverse', 0)
+                    
+                    # Normalize triggers from their typical 0-255 range
+                    forward_norm = max(0, min(1, forward_raw / 255.0))
+                    reverse_norm = max(0, min(1, reverse_raw / 255.0))
+                    
+                    # Combine: forward gives positive, reverse gives negative
+                    throttle_norm = forward_norm - reverse_norm
+                else:
+                    # T80 or traditional analog axes
+                    forward_norm = self.normalize(self.ax_val['forward'],
+                                                self.ax_min['forward'],
+                                                self.ax_max['forward'])
+                    reverse_norm = self.normalize(self.ax_val['reverse'],
+                                                self.ax_min['reverse'],
+                                                self.ax_max['reverse'])
+                    # Combine: forward gives positive, reverse gives negative
+                    throttle_norm = forward_norm - reverse_norm
         else:
             # Traditional single axis throttle
             throttle_norm = self.normalize(self.ax_val['throttle'],
@@ -388,14 +463,26 @@ class InputController:
                                         self.binding_callback(self.binding_target, code, ecodes.EV_ABS)
                                         continue
                                 
-                                # Determine which axis this event belongs to
+                                # Determine which axis this event belongs to based on controller type
                                 axis = None
-                                if code in self.config.steering_codes:
-                                    axis = 'steering'
-                                elif code == self.config.combined_axis_code:
-                                    axis = 'combined_axis'
-                                elif code in self.config.throttle_codes:
-                                    axis = 'throttle'
+                                if self.controller_type == "xbox":
+                                    # Xbox controller mapping
+                                    if code == self.config.xbox_steering_axis:
+                                        axis = 'steering'
+                                    elif code == self.config.xbox_throttle_axis and self.config.xbox_use_triggers:
+                                        axis = 'forward'  # Right trigger for forward
+                                    elif code == self.config.xbox_brake_axis and self.config.xbox_use_triggers:
+                                        axis = 'reverse'  # Left trigger for reverse/brake
+                                    elif code in self.config.throttle_codes and not self.config.xbox_use_triggers:
+                                        axis = 'throttle'  # Use stick if triggers disabled
+                                else:
+                                    # T80 or generic controller mapping
+                                    if code in self.config.steering_codes:
+                                        axis = 'steering'
+                                    elif code == self.config.combined_axis_code:
+                                        axis = 'combined_axis'
+                                    elif code in self.config.throttle_codes:
+                                        axis = 'throttle'
                                 
                                 if axis:
                                     # Update min/max for auto-calibration
@@ -413,12 +500,29 @@ class InputController:
                                     self.binding_callback(self.binding_target, code, ecodes.EV_KEY)
                                     continue
                                 
-                                if code in self.config.forward_pedal_codes:
-                                    self.button_states['forward_pedal'] = pressed
-                                    print(f"Forward pedal: {'PRESSED' if pressed else 'RELEASED'}")
-                                elif code in self.config.reverse_pedal_codes:
-                                    self.button_states['reverse_pedal'] = pressed
-                                    print(f"Reverse pedal: {'PRESSED' if pressed else 'RELEASED'}")
+                                # Handle button events based on controller type
+                                if self.controller_type == "xbox":
+                                    # Xbox controller button mapping
+                                    if code in [ecodes.BTN_A, ecodes.BTN_SOUTH]:  # A button for forward
+                                        self.button_states['forward_pedal'] = pressed
+                                        print(f"Xbox Forward (A): {'PRESSED' if pressed else 'RELEASED'}")
+                                    elif code in [ecodes.BTN_B, ecodes.BTN_EAST]:  # B button for reverse
+                                        self.button_states['reverse_pedal'] = pressed
+                                        print(f"Xbox Reverse (B): {'PRESSED' if pressed else 'RELEASED'}")
+                                    elif code in [ecodes.BTN_X, ecodes.BTN_WEST]:  # X button as alternative forward
+                                        self.button_states['forward_pedal'] = pressed
+                                        print(f"Xbox Forward (X): {'PRESSED' if pressed else 'RELEASED'}")
+                                    elif code in [ecodes.BTN_Y, ecodes.BTN_NORTH]:  # Y button as alternative reverse
+                                        self.button_states['reverse_pedal'] = pressed
+                                        print(f"Xbox Reverse (Y): {'PRESSED' if pressed else 'RELEASED'}")
+                                else:
+                                    # T80 or generic controller button mapping
+                                    if code in self.config.forward_pedal_codes:
+                                        self.button_states['forward_pedal'] = pressed
+                                        print(f"Forward pedal: {'PRESSED' if pressed else 'RELEASED'}")
+                                    elif code in self.config.reverse_pedal_codes:
+                                        self.button_states['reverse_pedal'] = pressed
+                                        print(f"Reverse pedal: {'PRESSED' if pressed else 'RELEASED'}")
                     
                     except BlockingIOError:
                         # No more events available, which is normal
@@ -755,6 +859,43 @@ class T80GUI:
             justify=tk.LEFT, font=("TkDefaultFont", 8))
         mode_info.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
+        # Controller type settings
+        controller_frame = ttk.LabelFrame(config_frame, text="Controller Type")
+        controller_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(controller_frame, text="Controller Type:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.controller_type_var = tk.StringVar(value=self.config.controller_type)
+        controller_combo = ttk.Combobox(controller_frame, textvariable=self.controller_type_var, 
+                                       values=["auto", "t80", "xbox", "gamepad"], state="readonly")
+        controller_combo.grid(row=0, column=1, padx=5, pady=2)
+        
+        # Controller info
+        controller_info = ttk.Label(controller_frame, text=
+            "auto: Auto-detect controller type\n" +
+            "t80: Thrustmaster T80 racing wheel\n" +
+            "xbox: Xbox/Microsoft controller\n" +
+            "gamepad: Generic gamepad",
+            justify=tk.LEFT, font=("TkDefaultFont", 8))
+        controller_info.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        
+        # Xbox-specific settings
+        xbox_frame = ttk.LabelFrame(controller_frame, text="Xbox Controller Settings")
+        xbox_frame.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+        
+        self.xbox_use_triggers_var = tk.BooleanVar(value=self.config.xbox_use_triggers)
+        ttk.Checkbutton(xbox_frame, text="Use triggers for throttle/brake (recommended)", 
+                       variable=self.xbox_use_triggers_var).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        
+        xbox_info = ttk.Label(xbox_frame, text=
+            "Xbox Controller Layout:\n" +
+            "• Left stick: Steering\n" +
+            "• Right trigger: Throttle/Forward\n" +
+            "• Left trigger: Brake/Reverse\n" +
+            "• A/X buttons: Forward (if not using triggers)\n" +
+            "• B/Y buttons: Reverse (if not using triggers)",
+            justify=tk.LEFT, font=("TkDefaultFont", 8))
+        xbox_info.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        
         # Analog pedal feel settings
         analog_pedal_frame = ttk.LabelFrame(config_frame, text="Analog Pedal Feel")
         analog_pedal_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -763,15 +904,15 @@ class T80GUI:
         ttk.Checkbutton(analog_pedal_frame, text="Enable Analog Feel (Gradual acceleration, instant release)", 
                        variable=self.analog_pedal_feel_var).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
-        ttk.Label(analog_pedal_frame, text="Acceleration Speed:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
-        self.throttle_ramp_speed_var = tk.DoubleVar(value=self.config.throttle_ramp_speed)
-        ttk.Entry(analog_pedal_frame, textvariable=self.throttle_ramp_speed_var, width=10).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Label(analog_pedal_frame, text="Throttle Ramp Duration (sec):").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.throttle_ramp_duration_var = tk.DoubleVar(value=self.config.throttle_ramp_duration)
+        ttk.Entry(analog_pedal_frame, textvariable=self.throttle_ramp_duration_var, width=10).grid(row=1, column=1, padx=5, pady=2)
         
         analog_info = ttk.Label(analog_pedal_frame, text=
             "When enabled:\n" +
             "• Pedal held = gradually increases throttle\n" +
             "• Pedal released = instantly goes to zero\n" +
-            "Acceleration Speed: 1.0-5.0 (higher = faster ramp up)",
+            "Ramp Duration: Time in seconds to reach full throttle (1.0 = 1 second)",
             justify=tk.LEFT, font=("TkDefaultFont", 8))
         analog_info.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
@@ -1515,10 +1656,12 @@ class T80GUI:
             self.config.steering_trim = self.steering_trim_config_var.get()
             self.config.throttle_trim = self.throttle_trim_config_var.get()
             self.config.analog_pedal_feel = self.analog_pedal_feel_var.get()
-            self.config.throttle_ramp_speed = self.throttle_ramp_speed_var.get()
+            self.config.throttle_ramp_duration = self.throttle_ramp_duration_var.get()
+            self.config.controller_type = self.controller_type_var.get()
+            self.config.xbox_use_triggers = self.xbox_use_triggers_var.get()
             
-            # Update the controller's ramping speed
-            self.controller.throttle_ramp_speed = self.config.throttle_ramp_speed
+            # Update the controller's ramping duration
+            self.controller.throttle_ramp_duration = self.config.throttle_ramp_duration
             
             self.config.save_config()
             self.controller.config = self.config
@@ -1553,7 +1696,11 @@ class T80GUI:
             
             # Update analog pedal controls
             self.analog_pedal_feel_var.set(self.config.analog_pedal_feel)
-            self.throttle_ramp_speed_var.set(self.config.throttle_ramp_speed)
+            self.throttle_ramp_duration_var.set(self.config.throttle_ramp_duration)
+            
+            # Update controller type settings
+            self.controller_type_var.set(self.config.controller_type)
+            self.xbox_use_triggers_var.set(self.config.xbox_use_triggers)
             
             # Update trim labels
             self.update_steering_trim()

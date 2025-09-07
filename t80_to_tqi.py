@@ -1,42 +1,126 @@
 #!/usr/bin/env python3
-import time, math, os, sys
+import time, math, os, sys, json
 from evdev import InputDevice, ecodes
 from smbus2 import SMBus, i2c_msg
 
-# ---- Config ----
-I2C_BUS = 1
-STEERING_ADDR = 0x60     # set after testing
-THROTTLE_ADDR = 0x61
-UPDATE_HZ = 200
-DEADZONE = 0.02
-EXPO = 0.25
-CLAMP = 0.98
-INVERT_THROTTLE = True   # flip if gas/brake reversed
-INVERT_STEERING = False
-GRAB_DEVICE = True
+# Load configuration from JSON file
+def load_config():
+    """Load configuration from t80_config.json"""
+    default_config = {
+        "i2c_bus": 1,
+        "steering_addr": 0x60,
+        "throttle_addr": 0x61,
+        "update_hz": 200,
+        "deadzone": 0.02,
+        "expo": 0.25,
+        "clamp": 0.98,
+        "invert_throttle": True,
+        "invert_steering": False,
+        "grab_device": True,
+        "use_separate_pedals": True,
+        "pedal_mode": "buttons",
+        "analog_pedal_feel": True,
+        "throttle_ramp_duration": 1.0,
+        "acceleration_curve": "exponential",
+        "curve_strength": 2.0,
+        "controller_type": "auto",
+        "xbox_use_triggers": True
+    }
+    
+    try:
+        with open("t80_config.json", 'r') as f:
+            loaded_config = json.load(f)
+            default_config.update(loaded_config)
+    except FileNotFoundError:
+        print("Config file not found, using defaults")
+    except Exception as e:
+        print(f"Error loading config: {e}, using defaults")
+    
+    return default_config
 
-# Pedal configuration
-USE_SEPARATE_PEDALS = True  # True for button pedals, False for single axis
-PEDAL_MODE = "buttons"      # "buttons", "axes", or "split_axis"
+# Load configuration
+config = load_config()
 
-# Analog pedal feel settings
-ANALOG_PEDAL_FEEL = True    # Enable car-like acceleration ramping
-ACCELERATION_CURVE = "exponential"  # "linear", "exponential", "s_curve", "quadratic"
-CURVE_STRENGTH = 2.0        # Strength of the curve effect (1.0 = linear, higher = more curved)
+# ---- Config from file ----
+I2C_BUS = config["i2c_bus"]
+STEERING_ADDR = config["steering_addr"]
+THROTTLE_ADDR = config["throttle_addr"]
+UPDATE_HZ = config["update_hz"]
+DEADZONE = config["deadzone"]
+EXPO = config["expo"]
+CLAMP = config["clamp"]
+INVERT_THROTTLE = config["invert_throttle"]
+INVERT_STEERING = config["invert_steering"]
+GRAB_DEVICE = config["grab_device"]
+USE_SEPARATE_PEDALS = config["use_separate_pedals"]
+PEDAL_MODE = config["pedal_mode"]
+ANALOG_PEDAL_FEEL = config["analog_pedal_feel"]
+THROTTLE_RAMP_DURATION = config["throttle_ramp_duration"]
+ACCELERATION_CURVE = config["acceleration_curve"]
+CURVE_STRENGTH = config["curve_strength"]
+CONTROLLER_TYPE = config["controller_type"]
+XBOX_USE_TRIGGERS = config["xbox_use_triggers"]
 
 # Button codes for pedals (adjust these based on your T80 wheel)
 FORWARD_PEDAL_CODES = {ecodes.BTN_TR, ecodes.BTN_TRIGGER}
 REVERSE_PEDAL_CODES = {ecodes.BTN_TL, ecodes.BTN_THUMB}
 
-# Map your input device automatically:
+# Map your input device automatically with controller type detection:
 DEFAULT_INPUT = "/dev/input/event0"
-def find_t80():
+CONTROLLER_TYPE = "auto"  # "auto", "t80", "xbox", "gamepad"
+
+def find_input_device():
+    """Find compatible input device (T80, Xbox controller, or generic gamepad)"""
     byid = "/dev/input/by-id"
+    devices = []
+    
     if os.path.isdir(byid):
         for name in os.listdir(byid):
-            if "Thrustmaster" in name and "event" in name:
-                return os.path.join(byid, name)
-    return DEFAULT_INPUT
+            if "event" in name:
+                device_path = os.path.join(byid, name)
+                # Prioritize based on controller type preference
+                if CONTROLLER_TYPE == "t80" and "Thrustmaster" in name:
+                    return device_path, "t80"
+                elif CONTROLLER_TYPE == "xbox" and ("Microsoft" in name or "Xbox" in name):
+                    return device_path, "xbox"
+                elif "Thrustmaster" in name:
+                    devices.append((device_path, "t80"))
+                elif "Microsoft" in name or "Xbox" in name:
+                    devices.append((device_path, "xbox"))
+                elif any(term in name.lower() for term in ["controller", "gamepad", "joystick"]):
+                    devices.append((device_path, "gamepad"))
+    
+    # Return the first compatible device if auto-detection
+    if devices and CONTROLLER_TYPE == "auto":
+        return devices[0]
+    
+    # Return specific type if found
+    for device_path, controller_type in devices:
+        if CONTROLLER_TYPE == controller_type:
+            return device_path, controller_type
+    
+    # Fallback to first device or default
+    if devices:
+        return devices[0]
+    return DEFAULT_INPUT, "unknown"
+
+def detect_controller_type(device_path):
+    """Detect controller type from device name"""
+    try:
+        test_device = InputDevice(device_path)
+        name = test_device.name.lower()
+        test_device.close()
+        
+        if "thrustmaster" in name:
+            return "t80"
+        elif "microsoft" in name or "xbox" in name:
+            return "xbox"
+        elif any(term in name for term in ["controller", "gamepad"]):
+            return "gamepad"
+        else:
+            return "unknown"
+    except:
+        return "unknown"
 
 # Axis codes (tweak with evtest if needed)
 STEERING_CODES = {ecodes.ABS_X, ecodes.ABS_RX}
@@ -107,8 +191,20 @@ class MCP4725:
             self.bus.i2c_rdwr(msg)
 
 def main():
-    dev_path = find_t80() if len(sys.argv) < 2 else sys.argv[1]
+    # Detect input device and controller type
+    if len(sys.argv) < 2:
+        device_info = find_input_device()
+        if isinstance(device_info, tuple):
+            dev_path, controller_type = device_info
+        else:
+            dev_path = device_info
+            controller_type = detect_controller_type(dev_path)
+    else:
+        dev_path = sys.argv[1]
+        controller_type = detect_controller_type(dev_path)
+    
     print("Using input:", dev_path)
+    print("Controller type:", controller_type)
     
     if USE_SEPARATE_PEDALS and PEDAL_MODE == "buttons":
         print("Pedal mode: Separate button pedals")
@@ -127,16 +223,16 @@ def main():
         except: pass
 
     # auto-cal mins/maxes for axes
-    ax_min = {'x': +32767, 'y': +32767}
-    ax_max = {'x': -32768, 'y': -32768}
-    ax_val = {'x': 0, 'y': 0}
+    ax_min = {'x': +32767, 'y': +32767, 'forward': 0, 'reverse': 0}
+    ax_max = {'x': -32768, 'y': -32768, 'forward': 255, 'reverse': 255}
+    ax_val = {'x': 0, 'y': 0, 'forward': 0, 'reverse': 0}
     
     # Button states for pedals
     button_states = {'forward': False, 'reverse': False}
     
     # Duration-based throttle system
     button_press_start_time = {'forward': None, 'reverse': None}
-    throttle_ramp_duration = 1.0  # Time to reach full throttle (1 second)
+    throttle_ramp_duration = THROTTLE_RAMP_DURATION  # Time to reach full throttle from config
     
     # Output smoothing for stable output
     steering_filter = [0.0] * 5  # 5-sample moving average
@@ -160,28 +256,56 @@ def main():
                 # Process available input events
                 try:
                     for event in dev.read():
-                        # Handle axis events (steering)
+                        # Handle axis events 
                         if event.type == ecodes.EV_ABS:
                             code = event.code; val = event.value
-                            if code in STEERING_CODES: ax = 'x'
-                            elif code in THROTTLE_CODES: ax = 'y'
-                            else: continue
-
-                            ax_min[ax] = min(ax_min[ax], val)
-                            ax_max[ax] = max(ax_max[ax], val)
-                            ax_val[ax] = val
+                            
+                            # Determine axis based on controller type
+                            ax = None
+                            if controller_type == "xbox":
+                                # Xbox controller mapping
+                                if code == ecodes.ABS_X:  # Left stick X for steering
+                                    ax = 'x'
+                                elif code == ecodes.ABS_RZ and XBOX_USE_TRIGGERS:  # Right trigger
+                                    ax = 'forward'
+                                elif code == ecodes.ABS_Z and XBOX_USE_TRIGGERS:   # Left trigger  
+                                    ax = 'reverse'
+                                elif code in THROTTLE_CODES and not XBOX_USE_TRIGGERS:
+                                    ax = 'y'
+                            else:
+                                # T80 or generic controller mapping
+                                if code in STEERING_CODES: 
+                                    ax = 'x'
+                                elif code in THROTTLE_CODES: 
+                                    ax = 'y'
+                            
+                            if ax:
+                                ax_min[ax] = min(ax_min.get(ax, val), val)
+                                ax_max[ax] = max(ax_max.get(ax, val), val)
+                                ax_val[ax] = val
                         
                         # Handle button events (pedals)
                         elif event.type == ecodes.EV_KEY and USE_SEPARATE_PEDALS and PEDAL_MODE == "buttons":
                             code = event.code
                             pressed = event.value == 1
                             
-                            if code in FORWARD_PEDAL_CODES:
-                                button_states['forward'] = pressed
-                                print(f"Forward pedal: {'PRESSED' if pressed else 'RELEASED'}")
-                            elif code in REVERSE_PEDAL_CODES:
-                                button_states['reverse'] = pressed
-                                print(f"Reverse pedal: {'PRESSED' if pressed else 'RELEASED'}")
+                            # Handle buttons based on controller type
+                            if controller_type == "xbox":
+                                # Xbox controller button mapping
+                                if code in [ecodes.BTN_A, ecodes.BTN_SOUTH, ecodes.BTN_X, ecodes.BTN_WEST]:
+                                    button_states['forward'] = pressed
+                                    print(f"Xbox Forward: {'PRESSED' if pressed else 'RELEASED'}")
+                                elif code in [ecodes.BTN_B, ecodes.BTN_EAST, ecodes.BTN_Y, ecodes.BTN_NORTH]:
+                                    button_states['reverse'] = pressed
+                                    print(f"Xbox Reverse: {'PRESSED' if pressed else 'RELEASED'}")
+                            else:
+                                # T80 or generic controller
+                                if code in FORWARD_PEDAL_CODES:
+                                    button_states['forward'] = pressed
+                                    print(f"Forward pedal: {'PRESSED' if pressed else 'RELEASED'}")
+                                elif code in REVERSE_PEDAL_CODES:
+                                    button_states['reverse'] = pressed
+                                    print(f"Reverse pedal: {'PRESSED' if pressed else 'RELEASED'}")
                 
                 except BlockingIOError:
                     # No more events available, which is normal
@@ -230,9 +354,22 @@ def main():
                         button_press_start_time['forward'] = None
                         button_press_start_time['reverse'] = None
                 else:
-                    # Traditional single axis throttle
-                    y = normalize(ax_val['y'], ax_min['y'], ax_max['y'])
-                    y = expo(apply_deadzone(y, DEADZONE), EXPO)
+                    # Process throttle based on controller type and mode
+                    if controller_type == "xbox" and XBOX_USE_TRIGGERS and PEDAL_MODE == "axes":
+                        # Xbox triggers: Convert from 0-255 range to -1 to +1
+                        forward_raw = ax_val.get('forward', 0)
+                        reverse_raw = ax_val.get('reverse', 0)
+                        
+                        # Normalize triggers from their typical 0-255 range
+                        forward_norm = max(0, min(1, forward_raw / 255.0))
+                        reverse_norm = max(0, min(1, reverse_raw / 255.0))
+                        
+                        # Combine: forward gives positive, reverse gives negative
+                        y = forward_norm - reverse_norm
+                    else:
+                        # Traditional single axis throttle
+                        y = normalize(ax_val['y'], ax_min['y'], ax_max['y'])
+                        y = expo(apply_deadzone(y, DEADZONE), EXPO)
                 
                 if INVERT_THROTTLE: y = -y
                 
