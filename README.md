@@ -48,6 +48,15 @@ sudo ./setup_pi.sh
 sudo systemctl status t80-headless.service
 ```
 
+### Uninstall
+```bash
+# Remove service and system integration
+sudo ./uninstall.sh
+
+# For complete removal (including source files)
+sudo ./uninstall.sh --complete
+```
+
 ## 📋 Hardware Requirements
 
 - **Raspberry Pi 5** (or compatible single-board computer)
