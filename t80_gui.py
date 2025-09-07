@@ -21,6 +21,57 @@ from evdev import InputDevice, ecodes
 from smbus2 import SMBus, i2c_msg
 import json
 
+class ScrollableFrame(ttk.Frame):
+    """A scrollable frame widget"""
+    def __init__(self, parent, *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        
+        # Create canvas and scrollbar
+        self.canvas = tk.Canvas(self, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        
+        # Configure scrolling
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        # Create window in canvas
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Configure canvas scrolling
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        
+        # Bind mouse wheel
+        self.bind_mousewheel()
+        
+        # Configure canvas window width
+        self.canvas.bind('<Configure>', self.on_canvas_configure)
+    
+    def on_canvas_configure(self, event):
+        """Configure the canvas window width"""
+        canvas_width = event.width
+        self.canvas.itemconfig(self.canvas_window, width=canvas_width)
+    
+    def bind_mousewheel(self):
+        """Bind mouse wheel to scrolling"""
+        def on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def bind_to_mousewheel(event):
+            self.canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        def unbind_from_mousewheel(event):
+            self.canvas.unbind_all("<MouseWheel>")
+        
+        self.canvas.bind('<Enter>', bind_to_mousewheel)
+        self.canvas.bind('<Leave>', unbind_from_mousewheel)
+
 class Config:
     """Configuration management"""
     def __init__(self):
@@ -782,11 +833,12 @@ class T80GUI:
     
     def setup_config_tab(self, notebook):
         """Set up the configuration tab"""
-        config_frame = ttk.Frame(notebook)
+        config_frame = ScrollableFrame(notebook)
         notebook.add(config_frame, text="Configuration")
         
-        # I2C settings
-        i2c_frame = ttk.LabelFrame(config_frame, text="I2C Settings")
+        # Use the scrollable frame's inner frame for content
+        content_frame = config_frame.scrollable_frame
+        i2c_frame = ttk.LabelFrame(content_frame, text="I2C Settings")
         i2c_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(i2c_frame, text="I2C Bus:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
@@ -802,7 +854,7 @@ class T80GUI:
         ttk.Entry(i2c_frame, textvariable=self.throttle_addr_var, width=10).grid(row=2, column=1, padx=5, pady=2)
         
         # Control settings
-        control_settings_frame = ttk.LabelFrame(config_frame, text="Control Settings")
+        control_settings_frame = ttk.LabelFrame(content_frame, text="Control Settings")
         control_settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(control_settings_frame, text="Update Rate (Hz):").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
@@ -818,7 +870,7 @@ class T80GUI:
         ttk.Entry(control_settings_frame, textvariable=self.expo_var, width=10).grid(row=2, column=1, padx=5, pady=2)
         
         # Inversion settings
-        invert_frame = ttk.LabelFrame(config_frame, text="Inversion Settings")
+        invert_frame = ttk.LabelFrame(content_frame, text="Inversion Settings")
         invert_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.invert_steering_var = tk.BooleanVar(value=self.config.invert_steering)
@@ -830,7 +882,7 @@ class T80GUI:
                        variable=self.invert_throttle_var).pack(anchor=tk.W, padx=5, pady=2)
         
         # Trim settings
-        trim_settings_frame = ttk.LabelFrame(config_frame, text="Trim Settings")
+        trim_settings_frame = ttk.LabelFrame(content_frame, text="Trim Settings")
         trim_settings_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(trim_settings_frame, text="Steering Trim:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
@@ -842,7 +894,7 @@ class T80GUI:
         ttk.Entry(trim_settings_frame, textvariable=self.throttle_trim_config_var, width=10).grid(row=1, column=1, padx=5, pady=2)
         
         # Pedal mode settings
-        pedal_mode_frame = ttk.LabelFrame(config_frame, text="Pedal Mode Settings")
+        pedal_mode_frame = ttk.LabelFrame(content_frame, text="Pedal Mode Settings")
         pedal_mode_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(pedal_mode_frame, text="Pedal Mode:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
@@ -860,7 +912,7 @@ class T80GUI:
         mode_info.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
         # Controller type settings
-        controller_frame = ttk.LabelFrame(config_frame, text="Controller Type")
+        controller_frame = ttk.LabelFrame(content_frame, text="Controller Type")
         controller_frame.pack(fill=tk.X, padx=5, pady=5)
         
         ttk.Label(controller_frame, text="Controller Type:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
@@ -897,7 +949,7 @@ class T80GUI:
         xbox_info.grid(row=1, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
         # Analog pedal feel settings
-        analog_pedal_frame = ttk.LabelFrame(config_frame, text="Analog Pedal Feel")
+        analog_pedal_frame = ttk.LabelFrame(content_frame, text="Analog Pedal Feel")
         analog_pedal_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.analog_pedal_feel_var = tk.BooleanVar(value=self.config.analog_pedal_feel)
@@ -917,7 +969,7 @@ class T80GUI:
         analog_info.grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         
         # Save/Load buttons
-        button_frame = ttk.Frame(config_frame)
+        button_frame = ttk.Frame(content_frame)
         button_frame.pack(fill=tk.X, padx=5, pady=10)
         
         ttk.Button(button_frame, text="Save Configuration", 
@@ -929,11 +981,14 @@ class T80GUI:
     
     def setup_calibration_tab(self, notebook):
         """Set up the calibration tab"""
-        cal_frame = ttk.Frame(notebook)
+        cal_frame = ScrollableFrame(notebook)
         notebook.add(cal_frame, text="Calibration")
         
+        # Use the scrollable frame's inner frame for content
+        content_frame = cal_frame.scrollable_frame
+        
         # Calibration info
-        info_frame = ttk.LabelFrame(cal_frame, text="Calibration Information")
+        info_frame = ttk.LabelFrame(content_frame, text="Calibration Information")
         info_frame.pack(fill=tk.X, padx=5, pady=5)
         
         info_text = """
@@ -951,7 +1006,7 @@ class T80GUI:
         ttk.Label(info_frame, text=info_text, justify=tk.LEFT).pack(padx=10, pady=10)
         
         # Calibration values display
-        values_frame = ttk.LabelFrame(cal_frame, text="Current Calibration Values")
+        values_frame = ttk.LabelFrame(content_frame, text="Current Calibration Values")
         values_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Create text widget for calibration values
@@ -959,16 +1014,19 @@ class T80GUI:
         self.cal_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Reset calibration button
-        ttk.Button(cal_frame, text="Reset Calibration", 
+        ttk.Button(content_frame, text="Reset Calibration", 
                   command=self.reset_calibration).pack(pady=10)
     
     def setup_binding_tab(self, notebook):
         """Set up the input binding tab"""
-        binding_frame = ttk.Frame(notebook)
+        binding_frame = ScrollableFrame(notebook)
         notebook.add(binding_frame, text="Input Binding")
         
+        # Use the scrollable frame's inner frame for content
+        content_frame = binding_frame.scrollable_frame
+        
         # Instructions
-        instructions_frame = ttk.LabelFrame(binding_frame, text="How to Use Input Binding")
+        instructions_frame = ttk.LabelFrame(content_frame, text="How to Use Input Binding")
         instructions_frame.pack(fill=tk.X, padx=5, pady=5)
         
         instructions_text = """
@@ -988,7 +1046,7 @@ class T80GUI:
         instructions_label.pack(padx=10, pady=10)
         
         # Binding status
-        status_frame = ttk.LabelFrame(binding_frame, text="Binding Status")
+        status_frame = ttk.LabelFrame(content_frame, text="Binding Status")
         status_frame.pack(fill=tk.X, padx=5, pady=5)
         
         self.binding_status_label = ttk.Label(status_frame, text="Ready to bind inputs", 
@@ -1001,7 +1059,7 @@ class T80GUI:
         self.cancel_binding_button.pack(pady=5)
         
         # Steering binding
-        steering_frame = ttk.LabelFrame(binding_frame, text="Steering Control")
+        steering_frame = ttk.LabelFrame(content_frame, text="Steering Control")
         steering_frame.pack(fill=tk.X, padx=5, pady=5)
         
         steering_info_frame = ttk.Frame(steering_frame)
@@ -1015,7 +1073,7 @@ class T80GUI:
                   command=lambda: self.start_binding('steering')).pack(side=tk.RIGHT, padx=5)
         
         # Forward pedal binding
-        forward_frame = ttk.LabelFrame(binding_frame, text="Forward Pedal")
+        forward_frame = ttk.LabelFrame(content_frame, text="Forward Pedal")
         forward_frame.pack(fill=tk.X, padx=5, pady=5)
         
         forward_info_frame = ttk.Frame(forward_frame)
@@ -1029,7 +1087,7 @@ class T80GUI:
                   command=lambda: self.start_binding('forward')).pack(side=tk.RIGHT, padx=5)
         
         # Reverse pedal binding
-        reverse_frame = ttk.LabelFrame(binding_frame, text="Reverse Pedal")
+        reverse_frame = ttk.LabelFrame(content_frame, text="Reverse Pedal")
         reverse_frame.pack(fill=tk.X, padx=5, pady=5)
         
         reverse_info_frame = ttk.Frame(reverse_frame)
@@ -1043,7 +1101,7 @@ class T80GUI:
                   command=lambda: self.start_binding('reverse')).pack(side=tk.RIGHT, padx=5)
         
         # Throttle axis binding (for single throttle mode)
-        throttle_frame = ttk.LabelFrame(binding_frame, text="Throttle Axis (Single Mode)")
+        throttle_frame = ttk.LabelFrame(content_frame, text="Throttle Axis (Single Mode)")
         throttle_frame.pack(fill=tk.X, padx=5, pady=5)
         
         throttle_info_frame = ttk.Frame(throttle_frame)
@@ -1067,11 +1125,14 @@ class T80GUI:
     
     def setup_acceleration_tab(self, notebook):
         """Set up the acceleration curve tab"""
-        accel_frame = ttk.Frame(notebook)
+        accel_frame = ScrollableFrame(notebook)
         notebook.add(accel_frame, text="Acceleration")
         
+        # Use the scrollable frame's inner frame for content
+        content_frame = accel_frame.scrollable_frame
+        
         # Create main horizontal layout
-        main_container = tk.Frame(accel_frame)
+        main_container = tk.Frame(content_frame)
         main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Left side - Controls
@@ -1253,11 +1314,14 @@ class T80GUI:
     
     def setup_service_tab(self, notebook):
         """Set up the service control tab"""
-        service_frame = ttk.Frame(notebook)
+        service_frame = ScrollableFrame(notebook)
         notebook.add(service_frame, text="Service Control")
         
+        # Use the scrollable frame's inner frame for content
+        content_frame = service_frame.scrollable_frame
+        
         # Service status frame
-        status_frame = ttk.LabelFrame(service_frame, text="Service Status")
+        status_frame = ttk.LabelFrame(content_frame, text="Service Status")
         status_frame.pack(fill=tk.X, padx=5, pady=5)
         
         # Status display
@@ -1272,7 +1336,7 @@ class T80GUI:
                   command=self.refresh_service_status).pack(side=tk.RIGHT, padx=5)
         
         # Service control buttons
-        control_frame = ttk.LabelFrame(service_frame, text="Service Control")
+        control_frame = ttk.LabelFrame(content_frame, text="Service Control")
         control_frame.pack(fill=tk.X, padx=5, pady=5)
         
         button_frame = ttk.Frame(control_frame)
@@ -1295,7 +1359,7 @@ class T80GUI:
                   command=self.disable_service).pack(side=tk.LEFT, padx=5)
         
         # Hardware test frame
-        test_frame = ttk.LabelFrame(service_frame, text="Hardware Test")
+        test_frame = ttk.LabelFrame(content_frame, text="Hardware Test")
         test_frame.pack(fill=tk.X, padx=5, pady=5)
         
         test_button_frame = ttk.Frame(test_frame)
@@ -1309,7 +1373,7 @@ class T80GUI:
                   command=self.full_system_test).pack(side=tk.LEFT, padx=5)
         
         # Service logs frame
-        logs_frame = ttk.LabelFrame(service_frame, text="Service Logs")
+        logs_frame = ttk.LabelFrame(content_frame, text="Service Logs")
         logs_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Log controls
