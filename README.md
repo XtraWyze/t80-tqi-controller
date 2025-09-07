@@ -37,6 +37,8 @@ pip install -r requirements.txt
 
 # Run the GUI
 python3 t80_gui.py
+# OR use the simple launcher
+./run_gui.sh
 ```
 
 ### Auto-Start Setup
@@ -47,6 +49,13 @@ sudo ./setup_pi.sh
 # Check service status
 sudo systemctl status t80-headless.service
 ```
+
+### Launch Options
+After setup, you can launch the GUI multiple ways:
+- **Desktop Icon**: Double-click T80_Controller on desktop
+- **Simple Script**: `./run_gui.sh`
+- **Direct Command**: `.venv/bin/python t80_gui.py`
+- **System Python**: `python3 t80_gui.py` (if dependencies installed globally)
 
 ### Uninstall
 ```bash
