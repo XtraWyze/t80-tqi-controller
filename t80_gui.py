@@ -253,17 +253,11 @@ class InputController:
                     
                 # Handle reverse pedal  
                 elif reverse_pressed and not forward_pressed:
-                    # Reverse button is held - track duration and calculate throttle
-                    if self.button_press_start_time['reverse'] is None:
-                        # Button just pressed - start timing
-                        self.button_press_start_time['reverse'] = current_time
-                        print(f"Reverse button pressed - starting timer at {current_time}")
-                    
-                    # Calculate throttle based on how long button has been held
-                    press_duration = current_time - self.button_press_start_time['reverse']
-                    linear_progress = min(1.0, press_duration / self.config.throttle_ramp_duration)
-                    throttle_norm = -self.apply_acceleration_curve(linear_progress)
-                    print(f"Reverse held for {press_duration:.3f}s -> linear: {linear_progress:.3f} -> curved: {throttle_norm:.3f}")
+                    # Reverse button - immediate full reverse (no curve for safety)
+                    throttle_norm = -1.0
+                    print(f"Reverse pressed -> immediate full reverse: {throttle_norm:.3f}")
+                    # Reset timing (not used for reverse, but keep clean)
+                    self.button_press_start_time['reverse'] = None
                     
                 else:
                     # No buttons pressed OR both pressed (safety) = instant zero
@@ -1085,12 +1079,15 @@ class T80GUI:
         info += f"Strength: {self.config.curve_strength:.1f}\n"
         info += f"Duration: {self.config.throttle_ramp_duration:.1f}s\n\n"
         
+        info += "Forward Throttle (curved):\n"
         # Calculate some key points
         key_times = [0.25, 0.5, 0.75, 1.0]
-        info += "Throttle at key times:\n"
         for t in key_times:
             throttle = self.apply_acceleration_curve(t) * 100
             info += f"  {t:.2f}s: {throttle:.1f}%\n"
+        
+        info += f"\nReverse Throttle:\n"
+        info += f"  Immediate: 100% (no curve)\n\n"
         
         # Add curve description
         descriptions = {
@@ -1108,8 +1105,10 @@ class T80GUI:
     def test_acceleration_curve(self):
         """Test the current acceleration curve with a simulated button press"""
         messagebox.showinfo("Test Curve", 
-                          "Press and hold a pedal button to see the current acceleration curve in action!\n\n"
-                          "Watch the debug output in the terminal to see the progression from linear to curved values.")
+                          "Test the throttle behavior:\n\n"
+                          "🚗 FORWARD: Hold forward button - gradual acceleration curve\n"
+                          "🛑 REVERSE: Press reverse button - immediate full reverse\n\n"
+                          "Watch the debug output in the terminal to see the difference!")
     
     def setup_service_tab(self, notebook):
         """Set up the service control tab"""

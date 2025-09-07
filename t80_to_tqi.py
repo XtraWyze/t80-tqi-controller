@@ -219,15 +219,10 @@ def main():
                         
                     # Handle reverse pedal  
                     elif reverse_pressed and not forward_pressed:
-                        # Reverse button is held - track duration and calculate throttle
-                        if button_press_start_time['reverse'] is None:
-                            # Button just pressed - start timing
-                            button_press_start_time['reverse'] = current_time
-                        
-                        # Calculate throttle based on how long button has been held
-                        press_duration = current_time - button_press_start_time['reverse']
-                        linear_progress = min(1.0, press_duration / throttle_ramp_duration)
-                        y = -apply_acceleration_curve(linear_progress)
+                        # Reverse button - immediate full reverse (no curve for safety)
+                        y = -1.0
+                        # Reset timing (not used for reverse, but keep clean)
+                        button_press_start_time['reverse'] = None
                         
                     else:
                         # No buttons pressed OR both pressed (safety) = instant zero

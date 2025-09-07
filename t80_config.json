@@ -34,7 +34,7 @@
   "analog_pedal_feel": true,
   "throttle_ramp_duration": 1.0,
   "acceleration_curve": "exponential",
-  "curve_strength": 2.0,
+  "curve_strength": 2.1,
   "throttle_ramp_speed": 1.0,
   "brake_ramp_speed": 10.0
 }
