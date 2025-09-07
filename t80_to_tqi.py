@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import time, math, os, sys, json
+import time, math, os, sys, json, subprocess
 from evdev import InputDevice, ecodes
 from smbus2 import SMBus, i2c_msg
 
@@ -69,11 +69,33 @@ REVERSE_PEDAL_CODES = {ecodes.BTN_TL, ecodes.BTN_THUMB}
 DEFAULT_INPUT = "/dev/input/event0"
 CONTROLLER_TYPE = "auto"  # "auto", "t80", "xbox", "gamepad"
 
+def find_bluetooth_controllers():
+    """Find Bluetooth controllers using bluetoothctl"""
+    bluetooth_devices = []
+    try:
+        result = subprocess.run(['bluetoothctl', 'devices'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            for line in result.stdout.strip().split('\n'):
+                if 'Device' in line:
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        mac = parts[1]
+                        name = ' '.join(parts[2:])
+                        if any(term in name.lower() for term in ['controller', 'xbox', 'gamepad', 'joystick']):
+                            bluetooth_devices.append((mac, name))
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return bluetooth_devices
+
 def find_input_device():
-    """Find compatible input device (T80, Xbox controller, or generic gamepad)"""
+    """Find compatible input device (T80, Xbox controller, or generic gamepad)
+    Enhanced with Bluetooth support"""
     byid = "/dev/input/by-id"
     devices = []
+    bluetooth_controllers = find_bluetooth_controllers()
     
+    # First, check /dev/input/by-id for USB devices
     if os.path.isdir(byid):
         for name in os.listdir(byid):
             if "event" in name:
@@ -89,6 +111,33 @@ def find_input_device():
                     devices.append((device_path, "xbox"))
                 elif any(term in name.lower() for term in ["controller", "gamepad", "joystick"]):
                     devices.append((device_path, "gamepad"))
+    
+    # Check for Bluetooth controllers by scanning /dev/input/event* devices
+    for i in range(10):  # Check event0 through event9
+        device_path = f"/dev/input/event{i}"
+        if os.path.exists(device_path):
+            try:
+                test_device = InputDevice(device_path)
+                name = test_device.name.lower()
+                test_device.close()
+                
+                # Check if this is a Bluetooth controller
+                is_bluetooth = False
+                for mac, bt_name in bluetooth_controllers:
+                    if bt_name.lower() in name or name in bt_name.lower():
+                        is_bluetooth = True
+                        break
+                
+                if is_bluetooth or "xbox" in name or "controller" in name:
+                    controller_type = "xbox" if "xbox" in name else "gamepad"
+                    if CONTROLLER_TYPE == "auto" or CONTROLLER_TYPE == controller_type:
+                        print(f"Found Bluetooth controller: {test_device.name} at {device_path}")
+                        devices.append((device_path, controller_type))
+                elif "thrustmaster" in name:
+                    if CONTROLLER_TYPE == "auto" or CONTROLLER_TYPE == "t80":
+                        devices.append((device_path, "t80"))
+            except (OSError, PermissionError):
+                continue
     
     # Return the first compatible device if auto-detection
     if devices and CONTROLLER_TYPE == "auto":

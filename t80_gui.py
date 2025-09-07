@@ -190,11 +190,33 @@ class InputController:
             print(f"I2C not available: {e}")
             self.i2c_available = False
     
+    def find_bluetooth_controllers(self):
+        """Find Bluetooth controllers using bluetoothctl"""
+        bluetooth_devices = []
+        try:
+            result = subprocess.run(['bluetoothctl', 'devices'], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    if 'Device' in line:
+                        parts = line.split()
+                        if len(parts) >= 3:
+                            mac = parts[1]
+                            name = ' '.join(parts[2:])
+                            if any(term in name.lower() for term in ['controller', 'xbox', 'gamepad', 'joystick']):
+                                bluetooth_devices.append((mac, name))
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        return bluetooth_devices
+
     def find_input_device(self):
-        """Find compatible input device (T80, Xbox controller, or generic gamepad)"""
+        """Find compatible input device (T80, Xbox controller, or generic gamepad)
+        Enhanced with Bluetooth support"""
         byid = "/dev/input/by-id"
         devices = []
+        bluetooth_controllers = self.find_bluetooth_controllers()
         
+        # First, check /dev/input/by-id for USB devices
         if os.path.isdir(byid):
             for name in os.listdir(byid):
                 if "event" in name:
@@ -210,6 +232,33 @@ class InputController:
                         devices.append((device_path, "xbox"))
                     elif any(term in name.lower() for term in ["controller", "gamepad", "joystick"]):
                         devices.append((device_path, "gamepad"))
+        
+        # Check for Bluetooth controllers by scanning /dev/input/event* devices
+        for i in range(10):  # Check event0 through event9
+            device_path = f"/dev/input/event{i}"
+            if os.path.exists(device_path):
+                try:
+                    test_device = InputDevice(device_path)
+                    name = test_device.name.lower()
+                    test_device.close()
+                    
+                    # Check if this is a Bluetooth controller
+                    is_bluetooth = False
+                    for mac, bt_name in bluetooth_controllers:
+                        if bt_name.lower() in name or name in bt_name.lower():
+                            is_bluetooth = True
+                            break
+                    
+                    if is_bluetooth or "xbox" in name or "controller" in name:
+                        controller_type = "xbox" if "xbox" in name else "gamepad"
+                        if self.config.controller_type == "auto" or self.config.controller_type == controller_type:
+                            print(f"Found Bluetooth controller: {test_device.name} at {device_path}")
+                            devices.append((device_path, controller_type))
+                    elif "thrustmaster" in name:
+                        if self.config.controller_type == "auto" or self.config.controller_type == "t80":
+                            devices.append((device_path, "t80"))
+                except (OSError, PermissionError):
+                    continue
         
         # Return the first compatible device if auto-detection
         if devices and self.config.controller_type == "auto":
@@ -1358,6 +1407,47 @@ class T80GUI:
         ttk.Button(boot_frame, text="Disable Auto-Start", 
                   command=self.disable_service).pack(side=tk.LEFT, padx=5)
         
+        # Bluetooth management frame
+        bluetooth_frame = ttk.LabelFrame(content_frame, text="Bluetooth Controllers")
+        bluetooth_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Bluetooth status
+        bt_status_frame = ttk.Frame(bluetooth_frame)
+        bt_status_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(bt_status_frame, text="Bluetooth Status:").pack(side=tk.LEFT)
+        self.bluetooth_status_label = ttk.Label(bt_status_frame, text="Checking...", foreground="orange")
+        self.bluetooth_status_label.pack(side=tk.LEFT, padx=10)
+        
+        ttk.Button(bt_status_frame, text="Refresh", 
+                  command=self.refresh_bluetooth_status).pack(side=tk.RIGHT, padx=5)
+        
+        # Bluetooth controls
+        bt_control_frame = ttk.Frame(bluetooth_frame)
+        bt_control_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(bt_control_frame, text="Scan for Controllers", 
+                  command=self.scan_bluetooth_controllers).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bt_control_frame, text="Connect Controller", 
+                  command=self.connect_bluetooth_controller).pack(side=tk.LEFT, padx=5)
+        
+        # Bluetooth device list
+        bt_list_frame = ttk.Frame(bluetooth_frame)
+        bt_list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        ttk.Label(bt_list_frame, text="Available Controllers:").pack(anchor=tk.W)
+        
+        # Create a frame for the listbox and scrollbar
+        list_container = ttk.Frame(bt_list_frame)
+        list_container.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.bluetooth_listbox = tk.Listbox(list_container, height=4)
+        self.bluetooth_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        bt_scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL, command=self.bluetooth_listbox.yview)
+        bt_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.bluetooth_listbox.config(yscrollcommand=bt_scrollbar.set)
+        
         # Hardware test frame
         test_frame = ttk.LabelFrame(content_frame, text="Hardware Test")
         test_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -1391,6 +1481,7 @@ class T80GUI:
         
         # Initial status check
         self.refresh_service_status()
+        self.refresh_bluetooth_status()
         self.refresh_logs()
     
     # Service control methods
@@ -1488,6 +1579,116 @@ class T80GUI:
         else:
             messagebox.showerror("Error", f"Failed to disable service:\n{stderr}")
         self.refresh_service_status()
+    
+    def refresh_bluetooth_status(self):
+        """Refresh Bluetooth adapter status"""
+        try:
+            # Check if Bluetooth is powered on
+            success, stdout, stderr = self.run_system_command("bluetoothctl show")
+            if success and "Powered: yes" in stdout:
+                self.bluetooth_status_label.config(text="Active", foreground="green")
+            else:
+                self.bluetooth_status_label.config(text="Inactive", foreground="red")
+            
+            # Update the device list
+            self.update_bluetooth_device_list()
+            
+        except Exception as e:
+            self.bluetooth_status_label.config(text=f"Error: {e}", foreground="red")
+    
+    def update_bluetooth_device_list(self):
+        """Update the list of Bluetooth controllers"""
+        self.bluetooth_listbox.delete(0, tk.END)
+        
+        try:
+            bluetooth_controllers = self.find_bluetooth_controllers()
+            if bluetooth_controllers:
+                for mac, name in bluetooth_controllers:
+                    # Check if device is connected
+                    success, stdout, stderr = self.run_system_command(f"bluetoothctl info {mac}")
+                    connected = "Connected: yes" in stdout if success else False
+                    status = "🟢 Connected" if connected else "🔴 Paired"
+                    self.bluetooth_listbox.insert(tk.END, f"{status} - {name} ({mac})")
+            else:
+                self.bluetooth_listbox.insert(tk.END, "No controllers found")
+        except Exception as e:
+            self.bluetooth_listbox.insert(tk.END, f"Error: {e}")
+    
+    def scan_bluetooth_controllers(self):
+        """Scan for new Bluetooth controllers"""
+        self.update_log_display("\n=== Scanning for Bluetooth Controllers ===")
+        messagebox.showinfo("Bluetooth Scan", 
+                           "Scanning for controllers...\n\n"
+                           "Put your controller in pairing mode:\n"
+                           "- Xbox: Hold Xbox + Connect buttons\n"
+                           "- PS4/PS5: Hold Share + PS buttons\n"
+                           "\nThis will take 10 seconds...")
+        
+        def scan_thread():
+            try:
+                # Start discovery
+                self.run_system_command("bluetoothctl discoverable on")
+                self.run_system_command("bluetoothctl pairable on")
+                self.run_system_command("bluetoothctl scan on")
+                
+                time.sleep(10)  # Scan for 10 seconds
+                
+                # Stop discovery
+                self.run_system_command("bluetoothctl scan off")
+                
+                # Update the GUI from the main thread
+                self.root.after(0, self.scan_complete)
+                
+            except Exception as e:
+                self.root.after(0, lambda: messagebox.showerror("Scan Error", f"Bluetooth scan failed: {e}"))
+        
+        threading.Thread(target=scan_thread, daemon=True).start()
+    
+    def scan_complete(self):
+        """Called when Bluetooth scan completes"""
+        self.update_log_display("Bluetooth scan completed")
+        self.update_bluetooth_device_list()
+        messagebox.showinfo("Scan Complete", "Bluetooth scan completed. Check the controller list for new devices.")
+    
+    def connect_bluetooth_controller(self):
+        """Connect to a selected Bluetooth controller"""
+        selection = self.bluetooth_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("No Selection", "Please select a controller from the list")
+            return
+        
+        item_text = self.bluetooth_listbox.get(selection[0])
+        if "No controllers" in item_text or "Error" in item_text:
+            return
+        
+        # Extract MAC address from the list item
+        try:
+            mac = item_text.split("(")[1].split(")")[0]
+            self.update_log_display(f"\n=== Connecting to {mac} ===")
+            
+            # Try to connect
+            success, stdout, stderr = self.run_system_command(f"bluetoothctl connect {mac}")
+            if success:
+                self.update_log_display(f"✅ Connected to {mac}")
+                messagebox.showinfo("Connection Success", f"Successfully connected to controller!")
+                self.update_bluetooth_device_list()
+            else:
+                self.update_log_display(f"❌ Failed to connect: {stderr}")
+                # Try pairing first if connection failed
+                pair_success, pair_stdout, pair_stderr = self.run_system_command(f"bluetoothctl pair {mac}")
+                if pair_success:
+                    # Try connecting again after pairing
+                    success, stdout, stderr = self.run_system_command(f"bluetoothctl connect {mac}")
+                    if success:
+                        self.update_log_display(f"✅ Paired and connected to {mac}")
+                        messagebox.showinfo("Connection Success", f"Successfully paired and connected!")
+                        self.update_bluetooth_device_list()
+                    else:
+                        messagebox.showerror("Connection Failed", f"Failed to connect after pairing:\n{stderr}")
+                else:
+                    messagebox.showerror("Connection Failed", f"Failed to pair device:\n{pair_stderr}")
+        except Exception as e:
+            messagebox.showerror("Connection Error", f"Error parsing controller selection: {e}")
     
     def test_i2c(self):
         """Test I2C DAC connections"""
