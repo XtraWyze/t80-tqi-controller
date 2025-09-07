@@ -1,0 +1,31 @@
+[Unit]
+Description=T80 Racing Wheel to TQi Controller (Headless)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=k
+Group=k
+WorkingDirectory=/home/k/Desktop/tqit80
+ExecStart=/usr/bin/python3 /home/k/Desktop/tqit80/t80_to_tqi.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables
+Environment=PYTHONUNBUFFERED=1
+
+# Allow access to hardware
+SupplementaryGroups=input i2c
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/k/Desktop/tqit80
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+evdev>=1.4.0
+smbus2>=0.4.1
+matplotlib>=3.5.0
+numpy>=1.21.0

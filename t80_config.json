@@ -1,0 +1,40 @@
+{
+  "i2c_bus": 1,
+  "steering_addr": 96,
+  "throttle_addr": 97,
+  "update_hz": 200,
+  "deadzone": 0.0,
+  "expo": 0.0,
+  "clamp": 0.98,
+  "invert_throttle": false,
+  "invert_steering": false,
+  "swap_controls": false,
+  "grab_device": true,
+  "use_separate_pedals": true,
+  "pedal_mode": "buttons",
+  "forward_pedal_codes": [
+    311,
+    288
+  ],
+  "reverse_pedal_codes": [
+    310,
+    289
+  ],
+  "combined_axis_code": 2,
+  "steering_codes": [
+    0,
+    3
+  ],
+  "throttle_codes": [
+    1,
+    4
+  ],
+  "steering_trim": 0.0,
+  "throttle_trim": 0.0,
+  "analog_pedal_feel": true,
+  "throttle_ramp_duration": 1.0,
+  "acceleration_curve": "exponential",
+  "curve_strength": 2.0,
+  "throttle_ramp_speed": 1.0,
+  "brake_ramp_speed": 10.0
+}
